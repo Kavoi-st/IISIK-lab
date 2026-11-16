@@ -1,0 +1,12 @@
+syntax = "proto3";
+package payment;
+
+service PaymentService {
+  rpc RegisterPayment (PaymentInput) returns (Payment);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message PaymentInput { string workOrderId = 1; float amount = 2; string method = 3; }
+message Payment { string id = 1; string status = 2; float amount = 3; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }

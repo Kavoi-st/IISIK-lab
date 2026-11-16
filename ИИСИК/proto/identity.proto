@@ -1,0 +1,17 @@
+syntax = "proto3";
+package identity;
+
+service IdentityService {
+  rpc Login (LoginRequest) returns (AuthResponse);
+  rpc RegisterUser (RegisterRequest) returns (AuthResponse);
+  rpc ValidateToken (TokenRequest) returns (UserResponse);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message LoginRequest { string login = 1; string password = 2; }
+message RegisterRequest { string login = 1; string password = 2; string fullName = 3; string phone = 4; string email = 5; }
+message UserResponse { string id = 1; string login = 2; string role = 3; string status = 4; string createdAt = 5; }
+message AuthResponse { string token = 1; UserResponse user = 2; }
+message TokenRequest { string token = 1; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }

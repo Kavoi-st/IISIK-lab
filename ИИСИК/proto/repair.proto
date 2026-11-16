@@ -1,0 +1,12 @@
+syntax = "proto3";
+package repair;
+
+service RepairService {
+  rpc CreateRequest (RepairRequestInput) returns (RepairRequest);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message RepairRequestInput { string clientId = 1; string deviceId = 2; string description = 3; string priority = 4; }
+message RepairRequest { string id = 1; string status = 2; string priority = 3; string description = 4; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }

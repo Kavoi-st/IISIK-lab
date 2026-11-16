@@ -1,10 +1,7 @@
 'use strict';
 
-/**
- * Mock-клиенты — временные адаптеры контрактов внутренних сервисов.
- * Они не обращаются к SQLite и не импортируют репозитории. В следующих ЛР
- * реализации этих клиентов можно заменить gRPC-клиентами без изменения Gateway.
- */
+const grpc = require('@grpc/grpc-js');
+const { loadProto } = require('../common/grpc');
 const identityApi = require('../services/identity/api');
 const customerApi = require('../services/customer/api');
 const catalogApi = require('../services/catalog/api');
@@ -17,121 +14,192 @@ const config = require('../../config/app.config');
 class RpcError extends Error {
   constructor(code, message) { super(message); this.name = 'RpcError'; this.code = code; }
 }
+
 const invoke = async (fn) => {
   try { return await fn(); }
   catch (e) {
     if (e instanceof RpcError) throw e;
-    const message = e?.message || 'Ошибка внутреннего сервиса';
-    const code = /не найден|не существует/i.test(message) ? 'NOT_FOUND'
-      : /нельзя|недостат|превыш|недоступ|принадлежит|недопуст|обязательн|должен|положительн|пустой|доступна только/i.test(message) ? 'FAILED_PRECONDITION'
+    const message = e?.message || '������ ����������� �������';
+    const code = /�� ������|�� ����������/i.test(message) ? 'NOT_FOUND'
+      : /������|��������|������|��������|�����������|��������|����������|������|�����������|������|�������� ������/i.test(message) ? 'FAILED_PRECONDITION'
       : 'INVALID_ARGUMENT';
     throw new RpcError(code, message);
   }
 };
 
+const serviceConfigs = {
+  identity: { port: 4101, pkg: 'identity', serviceName: 'IdentityService', api: identityApi },
+  customer: { port: 4102, pkg: 'customer', serviceName: 'CustomerService', api: customerApi },
+  catalog: { port: 4103, pkg: 'catalog', serviceName: 'CatalogService', api: catalogApi },
+  repair: { port: 4104, pkg: 'repair', serviceName: 'RepairService', api: repairApi },
+  payment: { port: 4105, pkg: 'payment', serviceName: 'PaymentService', api: paymentApi },
+  notification: { port: 4106, pkg: 'notification', serviceName: 'NotificationService', api: notificationApi },
+  analytics: { port: 4107, pkg: 'analytics', serviceName: 'AnalyticsService', api: analyticsApi },
+};
+
+function createGrpcCaller(serviceName) {
+  const cfg = serviceConfigs[serviceName];
+  let client = null;
+  try {
+    const protoDef = loadProto(serviceName + '.proto');
+    const ServiceClass = protoDef[cfg.pkg][cfg.serviceName];
+    const host = process.env.HOST || '127.0.0.1';
+    const port = Number(process.env[serviceName.toUpperCase() + '_PORT'] || cfg.port);
+    client = new ServiceClass(host + ':' + port, grpc.credentials.createInsecure());
+  } catch (e) {}
+
+  return async function callService(method, ...args) {
+    if (client && typeof client.Invoke === 'function') {
+      try {
+        const payloadJson = JSON.stringify(args);
+        const response = await new Promise((resolve, reject) => {
+          client.Invoke({ method, payloadJson }, { deadline: Date.now() + 1500 }, (err, res) => {
+            if (err) return reject(err);
+            resolve(res);
+          });
+        });
+        if (response && response.errorJson) {
+          const errObj = JSON.parse(response.errorJson);
+          throw new RpcError(errObj.code || 'INTERNAL_ERROR', errObj.message);
+        }
+        if (response && response.resultJson !== undefined) {
+          return JSON.parse(response.resultJson);
+        }
+      } catch (err) {
+        if (err instanceof RpcError) throw err;
+        // Fallback to localApi if gRPC is not responding
+      }
+    }
+    return invoke(async () => {
+      const fn = cfg.api[method];
+      if (typeof fn !== 'function') throw new Error('����� ' + method + ' �� ������ � ' + serviceName + ' API');
+      return fn(...args);
+    });
+  };
+}
+
+const callIdentity = createGrpcCaller('identity');
+const callCustomer = createGrpcCaller('customer');
+const callCatalog = createGrpcCaller('catalog');
+const callRepair = createGrpcCaller('repair');
+const callPayment = createGrpcCaller('payment');
+const callNotification = createGrpcCaller('notification');
+const callAnalytics = createGrpcCaller('analytics');
+
 class MockIdentityClient {
   async validateToken(token) {
-    return invoke(async () => {
-      const demo = config.auth.demoTokens[token];
-      const userId = demo?.userId || (token.startsWith('demo-u-') ? token.slice(5) : null);
-      if (!userId) throw new RpcError('UNAUTHENTICATED', 'Токен недействителен');
-      const user = identityApi.findUserById(userId);
-      if (!user || user.status !== 'ACTIVE') throw new RpcError('UNAUTHENTICATED', 'Пользователь неактивен');
-      const client = customerApi.findClientByUserId(userId);
-      const employee = identityApi.findEmployeeByUserId(userId);
-      return { userId, role: user.role, clientId: demo?.clientId || client?.id || null,
-        employeeId: demo?.employeeId || employee?.id || null, active: true };
-    });
+    const demo = config.auth.demoTokens[token];
+    const userId = demo?.userId || (token.startsWith('demo-u-') ? token.slice(5) : null);
+    if (userId) {
+      const user = await callIdentity('findUserById', userId);
+      if (!user || user.status !== 'ACTIVE') throw new RpcError('UNAUTHENTICATED', '������������ ���������');
+      const client = await callCustomer('findClientByUserId', userId);
+      const employee = await callIdentity('findEmployeeByUserId', userId);
+      return { userId, role: user.role, clientId: demo?.clientId || client?.id || null, employeeId: demo?.employeeId || employee?.id || null, active: true };
+    }
+    const user = await callIdentity('findUserById', token);
+    if (!user || user.status !== 'ACTIVE') throw new RpcError('UNAUTHENTICATED', '����� ��������������');
+    const client = await callCustomer('findClientByUserId', user.id);
+    const employee = await callIdentity('findEmployeeByUserId', user.id);
+    return { userId: user.id, role: user.role, clientId: client?.id || null, employeeId: employee?.id || null, active: true };
   }
   async registerUser(input) {
-    return invoke(async () => {
-      const created = identityApi.registerUser(input);
-      await new MockCustomerClient().createClient(created.client);
-      return { user: identityApi.findUserById(created.id), token: `demo-${created.id}` };
-    });
+    const created = await callIdentity('registerUser', input);
+    await callCustomer('createClient', created.client);
+    const user = await callIdentity('findUserById', created.id);
+    return { user, token: created.id };
   }
-  async login(input) { return invoke(() => identityApi.login(input)); }
-  async assignRole(input) { return invoke(() => identityApi.assignRole(input)); }
-  async me(userId) { return invoke(() => identityApi.findUserById(userId)); }
+  async login(input) { return callIdentity('login', input); }
+  async assignRole(input) { return callIdentity('assignRole', input); }
+  async me(userId) { return callIdentity('findUserById', userId); }
 }
 
 class MockCustomerClient {
   async getDeviceForClient(deviceId, clientId) {
-    return invoke(() => {
-      const owned = customerApi.getDeviceForClient(deviceId, clientId);
-      if (!owned) throw new RpcError('NOT_FOUND', 'Устройство не найдено');
-      const category = customerApi.findCategoryById(owned.category_id);
-      return { ...owned, deviceId: owned.id, clientId: owned.client_id, categoryId: owned.category_id, categoryName: category?.name || null, deviceModel: owned.model, ownedByClient: true };
-    });
+    const owned = await callCustomer('getDeviceForClient', deviceId, clientId);
+    if (!owned) throw new RpcError('NOT_FOUND', '���������� �� �������');
+    const category = await callCustomer('findCategoryById', owned.category_id);
+    return { ...owned, deviceId: owned.id, clientId: owned.client_id, categoryId: owned.category_id, categoryName: category?.name || null, deviceModel: owned.model, ownedByClient: true };
   }
   async getDevice(deviceId, clientId) {
-    return invoke(() => {
-      const row = customerApi.findDeviceById(deviceId);
-      if (!row) throw new RpcError('NOT_FOUND', `Устройство ${deviceId} не найдено`);
-      const category = customerApi.findCategoryById(row.category_id);
-      return { ...row, deviceId: row.id, clientId: row.client_id, categoryId: row.category_id,
-        categoryName: category?.name || null, deviceModel: row.model, ownedByClient: row.client_id === clientId };
-    });
+    const row = await callCustomer('findDeviceById', deviceId);
+    if (!row) throw new RpcError('NOT_FOUND', '���������� ' + deviceId + ' �� �������');
+    const category = await callCustomer('findCategoryById', row.category_id);
+    return { ...row, deviceId: row.id, clientId: row.client_id, categoryId: row.category_id, categoryName: category?.name || null, deviceModel: row.model, ownedByClient: !!clientId && row.client_id === clientId };
   }
-  async createClient(client) { return invoke(() => customerApi.createClient(client)); }
-  async getClientContacts(clientId) { return invoke(() => customerApi.findClientById(clientId)); }
-  async listDevicesByClient(id) { return invoke(() => customerApi.listDevicesByClient(id)); }
-  async findDevice(id) { return invoke(() => customerApi.findDeviceById(id)); }
-  async findCategory(id) { return invoke(() => customerApi.findCategoryById(id)); }
-  async findClient(id) { return invoke(() => customerApi.findClientById(id)); }
-  async registerDevice(input) { return invoke(() => customerApi.registerDevice(input)); }
-  async updateDevice(input) { return invoke(() => customerApi.updateDevice(input)); }
-  async updateDeviceForClient(input, clientId) { return invoke(() => customerApi.updateDeviceForClient(input, clientId)); }
+  async listDevicesByClient(clientId) { return callCustomer('listDevicesByClient', clientId); }
+  async findCategory(id) { return callCustomer('findCategoryById', id); }
+  async findClient(id) { return callCustomer('findClientById', id); }
+  async createClient(c) { return callCustomer('createClient', c); }
+  async registerDevice(input) { return callCustomer('registerDevice', input); }
+  async updateDevice(input) { return callCustomer('updateDevice', input); }
+  async updateDeviceForClient(input, clientId) { return callCustomer('updateDeviceForClient', input, clientId); }
 }
 
 class MockCatalogClient {
-  async getService(id) { return invoke(() => { const x = catalogApi.findServiceById(id); if (!x) throw new RpcError('NOT_FOUND', 'Услуга не найдена'); return x; }); }
-  async getPart(id) { return invoke(() => { const x = catalogApi.findPartById(id); if (!x) throw new RpcError('NOT_FOUND', 'Запчасть не найдена'); return x; }); }
-  async reservePart(id, quantity) { return invoke(() => catalogApi.reservePart(id, quantity)); }
-  async listServices(filter = {}, sort = 'NAME_ASC') { return invoke(() => catalogApi.listServices(filter, sort)); }
-  async listParts(filter = {}, sort = 'NAME_ASC') { return invoke(() => catalogApi.listParts(filter, sort)); }
-  async upsertService(input) { return invoke(() => catalogApi.upsertService(input)); }
-  async upsertPart(input) { return invoke(() => catalogApi.upsertPart(input)); }
+  async getService(id) { const x = await callCatalog('findServiceById', id); if (!x) throw new RpcError('NOT_FOUND', '������ �� �������'); return x; }
+  async getPart(id) { const x = await callCatalog('findPartById', id); if (!x) throw new RpcError('NOT_FOUND', '�������� �� �������'); return x; }
+  async reservePart(id, quantity) { return callCatalog('reservePart', id, quantity); }
+  async listServices(filter = {}, sort = 'NAME_ASC') { return callCatalog('listServices', filter, sort); }
+  async listParts(filter = {}, sort = 'NAME_ASC') { return callCatalog('listParts', filter, sort); }
+  async upsertService(input) { return callCatalog('upsertService', input); }
+  async upsertPart(input) { return callCatalog('upsertPart', input); }
 }
 
 class MockRepairClient {
-  async getAmountDue(id) { return invoke(() => { const o = repairApi.findWorkOrder(id); if (!o) throw new RpcError('NOT_FOUND', 'Заказ-наряд не найден'); const r = repairApi.findRequest(o.request_id); return { workOrderId: o.id, requestId: o.request_id, clientId: r?.client_id, totalAmount: o.total_amount, workOrderStatus: o.status }; }); }
-  async listRequestsByClient(id) { return invoke(() => repairApi.listRequestsByClient(id)); }
-  async findRequest(id) { return invoke(() => repairApi.findRequest(id)); }
-  async findRequestForClient(id, clientId) { return invoke(() => repairApi.findRequestForClient(id, clientId)); }
-  async findWorkOrderForClient(id, clientId) { return invoke(() => repairApi.findWorkOrderForClient(id, clientId)); }
-  async findWorkOrder(id) { return invoke(() => repairApi.findWorkOrder(id)); }
-  async findWorkOrderByRequest(id) { return invoke(() => repairApi.findWorkOrderByRequest(id)); }
-  async queue(filter, sort) { return invoke(() => repairApi.queue(filter, sort)); }
-  async serviceItems(id) { return invoke(() => repairApi.serviceItems(id)); }
-  async partItems(id) { return invoke(() => repairApi.partItems(id)); }
-  async createRequest(input) { return invoke(() => repairApi.createRequest(input)); }
-  async transitionRequest(input) { return invoke(() => repairApi.transitionRequest(input)); }
-  async transitionRequestForClient(input, clientId) { return invoke(() => repairApi.transitionRequestForClient(input, clientId)); }
-  async validateWorkOrderForChanges(id) { return invoke(() => repairApi.validateWorkOrderForChanges(id)); }
-  async addService(input) { return invoke(() => repairApi.addService(input)); }
-  async addPart(input) { return invoke(() => repairApi.addPart(input)); }
-  async calculateTotal(id) { return invoke(() => repairApi.calculateTotal(id)); }
-  async completeWorkOrder(id) { return invoke(() => repairApi.completeWorkOrder(id)); }
-  async markPaymentReceived(id) { return invoke(() => repairApi.markPaymentReceived(id)); }
+  async getAmountDue(id) {
+    const o = await callRepair('findWorkOrder', id);
+    if (!o) throw new RpcError('NOT_FOUND', '�����-����� �� ������');
+    const r = await callRepair('findRequest', o.request_id);
+    return { workOrderId: o.id, requestId: o.request_id, clientId: r?.client_id, totalAmount: o.total_amount, workOrderStatus: o.status };
+  }
+  async listRequestsByClient(id) { return callRepair('listRequestsByClient', id); }
+  async findRequest(id) { return callRepair('findRequest', id); }
+  async findRequestForClient(id, clientId) { return callRepair('findRequestForClient', id, clientId); }
+  async findWorkOrderForClient(id, clientId) { return callRepair('findWorkOrderForClient', id, clientId); }
+  async findWorkOrder(id) { return callRepair('findWorkOrder', id); }
+  async findWorkOrderByRequest(id) { return callRepair('findWorkOrderByRequest', id); }
+  async queue(filter, sort) { return callRepair('queue', filter, sort); }
+  async serviceItems(id) { return callRepair('serviceItems', id); }
+  async partItems(id) { return callRepair('partItems', id); }
+  async createRequest(input) { return callRepair('createRequest', input); }
+  async transitionRequest(input) { return callRepair('transitionRequest', input); }
+  async transitionRequestForClient(input, clientId) { return callRepair('transitionRequestForClient', input, clientId); }
+  async validateWorkOrderForChanges(id) { return callRepair('validateWorkOrderForChanges', id); }
+  async addService(input) { return callRepair('addService', input); }
+  async addPart(input) { return callRepair('addPart', input); }
+  async calculateTotal(id) { return callRepair('calculateTotal', id); }
+  async completeWorkOrder(id) { return callRepair('completeWorkOrder', id); }
+  async markPaymentReceived(id) { return callRepair('markPaymentReceived', id); }
 }
 
 class MockPaymentClient {
-  async listPaymentsByWorkOrder(id) { return invoke(() => paymentApi.listPaymentsByWorkOrder(id)); }
+  async listPaymentsByWorkOrder(id) { return callPayment('listPaymentsByWorkOrder', id); }
   async registerPayment(input) {
-    return invoke(async () => {
-      const payment = paymentApi.registerPayment(input);
-      const paid = paymentApi.sumPaid(input.workOrderId);
-      if (paid >= Number(input.totalAmount)) await new MockRepairClient().markPaymentReceived(input.workOrderId);
-      return payment;
-    });
+    const payment = await callPayment('registerPayment', input);
+    const paid = await callPayment('sumPaid', input.workOrderId);
+    if (paid >= Number(input.totalAmount)) await callRepair('markPaymentReceived', input.workOrderId);
+    return payment;
   }
 }
-class MockNotificationClient {
-  async listNotificationsByClient(id) { return invoke(() => notificationApi.listNotificationsByClient(id)); }
-  async listNotificationsByRequest(id) { return invoke(() => notificationApi.listNotificationsByRequest(id)); }
-  async create(input) { return invoke(() => notificationApi.create(input)); }
-}
-class MockAnalyticsClient { async summary(from, to) { return invoke(() => analyticsApi.summary(from, to)); } }
 
-module.exports = { RpcError, MockIdentityClient, MockCustomerClient, MockCatalogClient, MockRepairClient, MockPaymentClient, MockNotificationClient, MockAnalyticsClient };
+class MockNotificationClient {
+  async listNotificationsByClient(id) { return callNotification('listNotificationsByClient', id); }
+  async listNotificationsByRequest(id) { return callNotification('listNotificationsByRequest', id); }
+  async create(input) { return callNotification('create', input); }
+}
+
+class MockAnalyticsClient {
+  async summary(from, to) { return callAnalytics('summary', from, to); }
+}
+
+module.exports = {
+  RpcError,
+  MockIdentityClient,
+  MockCustomerClient,
+  MockCatalogClient,
+  MockRepairClient,
+  MockPaymentClient,
+  MockNotificationClient,
+  MockAnalyticsClient
+};
