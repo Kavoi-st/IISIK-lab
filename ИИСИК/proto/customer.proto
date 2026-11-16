@@ -1,0 +1,15 @@
+syntax = "proto3";
+package customer;
+
+service CustomerService {
+  rpc GetDevice (DeviceId) returns (Device);
+  rpc ListDevices (ClientId) returns (DeviceList);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message DeviceId { string id = 1; }
+message ClientId { string id = 1; }
+message Device { string id = 1; string model = 2; string serialNumber = 3; string note = 4; }
+message DeviceList { repeated Device devices = 1; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }

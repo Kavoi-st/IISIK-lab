@@ -1,0 +1,12 @@
+syntax = "proto3";
+package catalog;
+
+service CatalogService {
+  rpc GetService (ServiceId) returns (CatalogItem);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message ServiceId { string id = 1; }
+message CatalogItem { string id = 1; string name = 2; float price = 3; bool isActive = 4; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }

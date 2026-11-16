@@ -2,6 +2,7 @@
 
 /** Resolver-слой не обращается к репозиториям: только проверяет доступ и вызывает mock-клиенты. */
 const { GraphQLError } = require('graphql');
+const { generateToken } = require('./auth');
 const {
   MockIdentityClient, MockCustomerClient, MockCatalogClient, MockRepairClient,
   MockPaymentClient, MockNotificationClient, MockAnalyticsClient,
@@ -47,8 +48,8 @@ const resolvers = {
   analyticsSummary: async (_, {from,to},ctx) => { roles(ctx,['ADMIN']); const s=await call(()=>analytics.summary(from,to)); return { periodFrom:from,periodTo:to,...s,topServices:s.topServices.map(x=>({serviceId:x.service_id,serviceName:x.service_name,itemsCount:x.items_count,amountSum:x.amount_sum})),topCategories:s.topCategories.map(x=>({categoryId:x.category_id,categoryName:x.category_name,requestsCount:x.requests_count})) }; },
  },
  Mutation: {
-  registerUser: async (_,a) => { const x=await call(()=>identity.registerUser(a)); return {token:x.token,user:user(x.user)}; },
-  login: async (_,a) => { const x=await call(()=>identity.login(a)); return {token:x.token,user:user(x.user)}; },
+  registerUser: async (_,a) => { const x=await call(()=>identity.registerUser(a)); const token = await generateToken(x.user); return {token,user:user(x.user)}; },
+  login: async (_,a) => { const x=await call(()=>identity.login(a)); const token = await generateToken(x.user); return {token,user:user(x.user)}; },
   assignRole: async (_,a,ctx) => { roles(ctx,['ADMIN']); return user(await call(()=>identity.assignRole({userId:a.userId,roleCode:a.role}))); },
   registerDevice: async (_, {input},ctx) => { const p=roles(ctx,['CLIENT']); return device(await call(()=>customer.registerDevice({...input,clientId:p.clientId}))); },
   updateDevice: async (_, {input},ctx) => { const p=auth(ctx); const updated=await call(()=>p.role==='CLIENT'?customer.updateDeviceForClient(input,p.clientId):customer.updateDevice(input)); return device(updated); },
@@ -84,3 +85,4 @@ const resolvers = {
  },
 };
 module.exports = { resolvers };
+

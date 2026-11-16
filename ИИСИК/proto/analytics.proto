@@ -1,0 +1,12 @@
+syntax = "proto3";
+package analytics;
+
+service AnalyticsService {
+  rpc GetSummary (Period) returns (Summary);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message Period { string from = 1; string to = 2; }
+message Summary { int32 requestsCreated = 1; float revenue = 2; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }

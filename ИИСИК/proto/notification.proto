@@ -1,0 +1,12 @@
+syntax = "proto3";
+package notification;
+
+service NotificationService {
+  rpc SendNotification (NotificationInput) returns (Result);
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message NotificationInput { string userId = 1; string message = 2; }
+message Result { bool success = 1; }
+message InvokeRequest { string method = 1; string payloadJson = 2; }
+message InvokeResponse { string resultJson = 1; string errorJson = 2; }
